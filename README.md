@@ -11,6 +11,8 @@ npm run dev
 
 Set `VITE_API_BASE_URL` in a local `.env` file when connecting a backend. The example is in `.env.example`. `npm run build` creates a production build.
 
+The diary's “Dig deeper” and “Get perspective” actions call `POST /api/ai/feedback` at that base URL. The request JSON is `{ "action": "dig_deeper" | "get_perspective", "title": "...", "content": "..." }`; the backend should return `{ "feedback": "..." }`.
+
 ## Product structure
 
 - `src/App.tsx` composes the persistent shell and independent feature views.

@@ -1,6 +1,15 @@
 import type { AIResponse } from '../types'
+import { apiClient } from './apiClient'
 const delay = (ms = 650) => new Promise(resolve => setTimeout(resolve, ms))
+
+export type WritingFeedbackAction = 'dig_deeper' | 'get_perspective'
+
 export const aiService = {
+  async getWritingFeedback(action: WritingFeedbackAction, entry: { title: string; content: string }): Promise<string> {
+    const result = await apiClient.post<{ feedback: string }>('/api/ai/feedback', { action, ...entry })
+    if (typeof result.feedback !== 'string' || !result.feedback.trim()) throw new Error('The feedback response was empty.')
+    return result.feedback
+  },
   async ask(question: string): Promise<AIResponse> {
     await delay()
     const text = question.toLowerCase()
