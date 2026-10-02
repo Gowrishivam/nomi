@@ -18,7 +18,7 @@ Set `VITE_API_BASE_URL` in a local `.env` file when connecting a backend. The ex
 - `src/services/` isolates mock data and async operations from the UI. `apiClient.ts` is the centralized REST boundary for a future FastAPI implementation.
 - `src/styles.css` contains the shared design system and responsive layouts.
 
-The current prototype uses realistic fictional demo data. It does not record audio or provide real AI, authentication, encryption, or privacy guarantees. Recording and processing are simulated, and saved demo entries remain in in-memory service state for this session.
+The current prototype uses realistic fictional demo data. Recording requests microphone access after the user presses “Talk about today” and captures audio locally in the browser with `MediaRecorder`; the session recording can be played from its diary entry and is not uploaded. Transcript, memory extraction, and AI responses remain simulated. The app does not provide real authentication, encryption, or broader privacy guarantees, and demo entries remain in in-memory service state for this session.
 
 ## Main demo flow
 

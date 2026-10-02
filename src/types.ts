@@ -6,3 +6,5 @@ export interface TimelineEvent { id: string; date: string; title: string; summar
 export interface AIResponse { answer: string; sources: Source[] }
 export interface Goal { id: string; title: string; note: string; progress: number }
 export interface Task { id: string; title: string; done: boolean; due: string }
+export type CalendarCategory = 'personal' | 'general' | 'notable'
+export interface CalendarEntry { id: string; date: string; title: string; startTime: string; endTime: string; description: string; category: CalendarCategory }

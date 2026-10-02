@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { AudioLines, Bookmark, Brain, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, Command, Compass, Feather, FolderKanban, Goal, Headphones, Home, Lightbulb, LockKeyhole, Menu, Mic, MoreHorizontal, Pause, Play, Plus, Search, Settings2, Sparkles, Square, Sun, Users, WandSparkles, X } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { AudioLines, Bold, Bookmark, Brain, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, Code2, Command, Compass, Feather, FolderKanban, Goal, Headphones, Home, Italic, Lightbulb, List, LockKeyhole, Menu, Mic, MoreHorizontal, Paperclip, Pause, Play, Plus, Search, Settings2, Sparkles, Square, Sun, Underline, Users, WandSparkles, X } from 'lucide-react'
 import type { DiaryEntry, Memory, Page, TimelineEvent } from './types'
 import { memoryService } from './services/memoryService'
 import { aiService } from './services/aiService'
+import CalendarSection from './components/CalendarSection'
 
 const primary: { label: Page; icon: typeof Home }[] = [
   { label: 'Home', icon: Home }, { label: 'Diary', icon: Feather }, { label: 'Memories', icon: Bookmark }, { label: 'Ask AI', icon: Sparkles }, { label: 'Timeline', icon: CalendarDays }, { label: 'Insights', icon: Compass }, { label: 'Goals', icon: Goal }, { label: 'Experiences', icon: WandSparkles },
@@ -19,8 +20,12 @@ export default function App() {
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null)
   const [selectedDiary, setSelectedDiary] = useState<DiaryEntry | null>(null)
   const [recording, setRecording] = useState(false)
+  const [micRequesting, setMicRequesting] = useState(false)
   const [paused, setPaused] = useState(false)
   const [seconds, setSeconds] = useState(0)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<BlobPart[]>([])
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
   const [processingStep, setProcessingStep] = useState(0)
   const [showFindings, setShowFindings] = useState(false)
@@ -34,21 +39,80 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [mobileNav, setMobileNav] = useState(false)
   const [queryError, setQueryError] = useState(false)
+  const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
     memoryService.getMemories().then(setMemories)
     memoryService.getDiary().then(setDiary)
     memoryService.getTimeline().then(setTimeline)
   }, [])
+  const saveDiaryEntry = (entry: DiaryEntry) => setDiary(current => current.some(item => item.id === entry.id) ? current.map(item => item.id === entry.id ? entry : item) : [entry, ...current])
+  useEffect(() => { const id = window.setInterval(() => setNow(new Date()), 30_000); return () => window.clearInterval(id) }, [])
   useEffect(() => {
     if (!recording || paused) return
     const id = window.setInterval(() => setSeconds(value => value + 1), 1000)
     return () => window.clearInterval(id)
   }, [recording, paused])
+  useEffect(() => () => {
+    const activeRecorder = recorderRef.current
+    if (activeRecorder && activeRecorder.state !== 'inactive') activeRecorder.stop()
+    activeRecorder?.stream.getTracks().forEach(track => track.stop())
+    if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl)
+  }, [recordedAudioUrl])
   useEffect(() => { if (!toast) return; const id = window.setTimeout(() => setToast(''), 2500); return () => window.clearTimeout(id) }, [toast])
   const navigate = (next: Page) => { setPage(next); setSelectedMemory(null); setSelectedDiary(null); setMobileNav(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
-  const startRecording = () => { setSeconds(0); setRecording(true); setPaused(false) }
-  const stopRecording = () => { setRecording(false); setProcessing(true); setProcessingStep(0); window.setTimeout(() => setProcessingStep(1), 1500); window.setTimeout(() => setProcessingStep(2), 3200); window.setTimeout(() => setProcessingStep(3), 5000); window.setTimeout(async () => { const entry = await memoryService.saveRecording(demoTranscript); setDiary(await memoryService.getDiary()); setMemories(await memoryService.getMemories()); setLatestEntry(entry); setProcessing(false); setShowFindings(true) }, 6500) }
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setToast('Microphone recording is not supported in this browser.')
+      return
+    }
+    setMicRequesting(true)
+    setToast('Waiting for microphone permission…')
+    let stream: MediaStream | null = null
+    try {
+      const currentStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      setMicRequesting(false)
+      setToast('')
+      stream = currentStream
+      const recorder = new MediaRecorder(currentStream)
+      audioChunksRef.current = []
+      recorder.ondataavailable = event => { if (event.data.size > 0) audioChunksRef.current.push(event.data) }
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        setRecordedAudioUrl(previous => { if (previous) URL.revokeObjectURL(previous); return URL.createObjectURL(blob) })
+        currentStream.getTracks().forEach(track => track.stop())
+      }
+      recorderRef.current = recorder
+      recorder.start()
+      setSeconds(0)
+      setRecording(true)
+      setPaused(false)
+    } catch (error) {
+      setMicRequesting(false)
+      stream?.getTracks().forEach(track => track.stop())
+      const message = error instanceof DOMException && error.name === 'NotAllowedError'
+        ? 'Microphone access was blocked. Allow it in this site’s browser settings, then try again.'
+        : 'The microphone could not be started. Check that it is connected and try again.'
+      setToast(message)
+    }
+  }
+  const stopRecording = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop()
+    recorderRef.current = null
+    setRecording(false)
+    setPaused(false)
+    setProcessing(true)
+    setProcessingStep(0)
+    window.setTimeout(() => setProcessingStep(1), 1500)
+    window.setTimeout(() => setProcessingStep(2), 3200)
+    window.setTimeout(() => setProcessingStep(3), 5000)
+    window.setTimeout(async () => { const entry = await memoryService.saveRecording(demoTranscript); setDiary(await memoryService.getDiary()); setMemories(await memoryService.getMemories()); setLatestEntry(entry); setProcessing(false); setShowFindings(true) }, 6500)
+  }
+  const toggleRecordingPause = () => {
+    const recorder = recorderRef.current
+    if (recorder?.state === 'recording') { recorder.pause(); setPaused(true) }
+    else if (recorder?.state === 'paused') { recorder.resume(); setPaused(false) }
+  }
   const ask = async (value = query) => { if (!value.trim()) { setToast('Add a question to begin.'); return } setQuery(value); setAnswer(''); setAsking(true); setQueryError(false); try { const result = await aiService.ask(value); setAnswer(result.answer); setSources(result.sources) } catch { setQueryError(true) } finally { setAsking(false) } }
 
   return <div className="app-shell">
@@ -61,12 +125,13 @@ export default function App() {
       <div className="sidebar-bottom"><button className={`nav-button ${page === 'Settings' ? 'active' : ''}`} onClick={() => navigate('Settings')}><Settings2 size={17}/><span>Settings</span></button><div className="privacy-mini"><div className="privacy-icon"><LockKeyhole size={15}/></div><div><b>Your space, your pace</b><small>Private by design</small></div></div><button className="profile-button" onClick={() => navigate('Settings')}><span className="avatar">A</span><span className="profile-copy"><b>Alex Morgan</b><small>Personal space</small></span><MoreHorizontal size={18} className="profile-more"/></button></div>
     </aside>
     {mobileNav && <button className="mobile-scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
-    <main className="main-area"><header className="topbar"><div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open menu"><Menu size={20}/></button><span className="crumb-dot"/><span>{page === 'Home' ? 'A quieter way to remember' : page}</span></div><div className="topbar-right"><span className="date-today">THURSDAY, OCTOBER 1</span><button className="help-button" aria-label="About Memory" onClick={() => setToast('Memory helps you capture moments and find them again.') }><CircleHelp size={17}/></button></div></header>
-      {page === 'Home' && <HomePage onRecord={startRecording} onNavigate={navigate} memories={memories} onOpenMemory={setSelectedMemory} />}
-      {recording && <RecordingModal seconds={seconds} paused={paused} onPause={() => setPaused(!paused)} onStop={stopRecording} />}
+    <main className="main-area"><header className="topbar"><div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open menu"><Menu size={20}/></button><span className="crumb-dot"/><span>{page === 'Home' ? 'A quieter way to remember' : page}</span></div><div className="topbar-right"><span className="date-today">{new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(now).toUpperCase()}</span><button className="help-button" aria-label="About Memory" onClick={() => setToast('Memory helps you capture moments and find them again.') }><CircleHelp size={17}/></button></div></header>
+      {page === 'Home' && <HomePage now={now} onRecord={startRecording} onNavigate={navigate} memories={memories} onOpenMemory={setSelectedMemory} micRequesting={micRequesting} />}
+      {recording && <RecordingModal seconds={seconds} paused={paused} onPause={toggleRecordingPause} onStop={stopRecording} />}
       {processing && <ProcessingModal step={processingStep} />}
       {showFindings && <FindingsModal entry={latestEntry} onClose={() => setShowFindings(false)} onNavigate={destination => { setShowFindings(false); navigate(destination); if (destination === 'Diary') setSelectedDiary(latestEntry) }} />}
-      {page === 'Diary' && <DiaryPage diary={diary} selected={selectedDiary} onSelect={setSelectedDiary} onNavigate={navigate} />}
+      {page === 'Diary' && <DiaryPage diary={diary} selected={selectedDiary} onSelect={setSelectedDiary} onSave={saveDiaryEntry} onRecord={startRecording} />}
+      {page === 'Diary' && recordedAudioUrl && selectedDiary?.id === latestEntry?.id && <div className="captured-audio"><div className="captured-audio-label"><AudioLines size={15}/><span><b>Your recording</b><small>Audio is held in this browser session</small></span></div><audio controls src={recordedAudioUrl}/></div>}
       {page === 'Memories' && <MemoriesPage memories={memories} onOpen={setSelectedMemory} />}
       {page === 'Ask AI' && <AskPage query={query} setQuery={setQuery} onAsk={ask} answer={answer} sources={sources} asking={asking} mode={mode} setMode={setMode} contextOpen={contextOpen} setContextOpen={setContextOpen} onOpenSource={source => { if (source.kind === 'Memory') { const found = memories.find(item => item.id === source.id); if (found) { setSelectedMemory(found); setPage('Memories') } else setPage('Memories') } else if (source.kind === 'Diary entry') { setSelectedDiary(diary.find(entry => entry.id === source.id) ?? diary[0]); setPage('Diary') } else setPage('Timeline') }} error={queryError} />}
       {page === 'Timeline' && <TimelinePage events={timeline} />}
@@ -82,24 +147,83 @@ export default function App() {
 function NavButton({ item, active, onClick }: { item: { label: Page; icon: typeof Home }; active: boolean; onClick: () => void }) { const Icon = item.icon; return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}><Icon size={17} strokeWidth={1.7}/><span>{item.label}</span>{item.label === 'Tasks' && <span className="nav-count">2</span>}</button> }
 function PageHeading({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle: string; action?: ReactNode }) { return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{subtitle}</p></div>{action}</div> }
 
-function HomePage({ onRecord, onNavigate, memories, onOpenMemory }: { onRecord: () => void; onNavigate: (page: Page) => void; memories: Memory[]; onOpenMemory: (memory: Memory) => void }) {
+function HomePage({ now, onRecord, onNavigate, memories, onOpenMemory, micRequesting }: { now: Date; onRecord: () => void; onNavigate: (page: Page) => void; memories: Memory[]; onOpenMemory: (memory: Memory) => void; micRequesting: boolean }) {
   const recent = memories[0]
+  const greeting = now.getHours() < 12 ? 'Good morning,' : now.getHours() < 18 ? 'Good afternoon,' : 'Good evening,'
+  const todayLabel = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(now).toUpperCase()
   return <div className="home-page">
-    <div className="home-topline"><span className="day-mark"><Sun size={14}/> THURSDAY, OCTOBER 1</span><span>TAKE A BREATH. YOU’RE HERE.</span></div>
-    <section className="home-hero"><div className="hero-copy"><div className="hero-eyebrow"><span/> YOUR PERSONAL MEMORY SPACE</div><h1>Good morning,<br/><em>Alex.</em></h1><p>What would you like to remember today?</p><div className="hero-actions"><button className="primary-action" onClick={onRecord}><span className="mic-disc"><Mic size={18}/></span><span><b>Talk about today</b><small>Capture a moment, just as it happened</small></span><ChevronRight size={18}/></button><button className="secondary-action" onClick={() => onNavigate('Diary')}><Plus size={17}/> New diary entry</button><button className="text-action" onClick={() => onNavigate('Ask AI')}><Sparkles size={16}/> Ask AI</button></div></div><div className="hero-art" aria-hidden="true"><div className="sun-disc"/><div className="horizon h1"/><div className="horizon h2"/><div className="horizon h3"/><span className="art-star star-a">✳</span><span className="art-star star-b">·</span><span className="art-caption">A moment becomes a memory</span></div></section>
+    <div className="home-topline"><span className="day-mark"><Sun size={14}/> {todayLabel}</span><span>TAKE A BREATH. YOU’RE HERE.</span></div>
+    <section className="home-hero"><div className="hero-copy"><div className="hero-eyebrow"><span/> YOUR PERSONAL MEMORY SPACE</div><h1>{greeting}<br/><em>Alex.</em></h1><p>What would you like to remember today?</p><div className="hero-actions"><button className="primary-action" onClick={onRecord} disabled={micRequesting}><span className="mic-disc"><Mic size={18}/></span><span><b>{micRequesting ? 'Waiting for mic access…' : 'Talk about today'}</b><small>Capture a moment, just as it happened</small></span><ChevronRight size={18}/></button><button className="secondary-action" onClick={() => onNavigate('Diary')}><Plus size={17}/> New diary entry</button><button className="text-action" onClick={() => onNavigate('Ask AI')}><Sparkles size={16}/> Ask AI</button></div></div><div className="hero-art" aria-hidden="true"><div className="sun-disc"/><div className="horizon h1"/><div className="horizon h2"/><div className="horizon h3"/><span className="art-star star-a">✳</span><span className="art-star star-b">·</span><span className="art-caption">A moment becomes a memory</span></div></section>
     <section className="day-glance"><div className="section-caption"><span>YOUR DAY</span><span className="caption-rule"/><span className="soft-note">So far, today</span></div><div className="glance-items"><button onClick={() => onNavigate('Memories')}><span className="glance-value">{memories.length > 0 ? 3 : 0}</span><span>memories</span><Bookmark size={16}/></button><i/><button onClick={() => onNavigate('Tasks')}><span className="glance-value">2</span><span>tasks</span><Check size={16}/></button><i/><button onClick={() => onNavigate('Diary')}><span className="glance-value">1</span><span>diary entry</span><Feather size={16}/></button></div></section>
     <div className="home-lower"><section className="recent-memory"><div className="section-caption"><span>RECENT MEMORY</span><button onClick={() => onNavigate('Memories')}>All memories <ChevronRight size={14}/></button></div>{recent && <button className="memory-feature" onClick={() => onOpenMemory(recent)}><div className="memory-feature-top"><span className="memory-icon"><Bookmark size={16}/></span><span className="memory-age">2 HOURS AGO <span>·</span> OCT 1</span><MoreHorizontal size={18}/></div><blockquote>“{recent.content}”</blockquote><div className="tag-row">{recent.topics.map(tag => <span className="topic-tag" key={tag}>{tag}</span>)}</div><div className="memory-source"><AudioLines size={14}/> From a voice recording <ChevronRight size={14}/></div></button>}</section><section className="noticing-card"><div className="notice-icon"><Lightbulb size={17}/></div><div className="notice-kicker">SOMETHING I NOTICED</div><p>You’ve mentioned the hackathon <em>7 times</em> this week.</p><button onClick={() => onNavigate('Insights')}>Explore this thread <ChevronRight size={14}/></button><span className="notice-spark">✳</span></section></div>
+    <CalendarSection now={now} />
   </div>
 }
 
 function RecordingModal({ seconds, paused, onPause, onStop }: { seconds: number; paused: boolean; onPause: () => void; onStop: () => void }) { return <div className="overlay recording-overlay"><div className="recording-panel"><button className="modal-close" onClick={onStop} aria-label="Stop recording"><X size={18}/></button><div className="recording-orbit"><span className="orbit o1"/><span className="orbit o2"/><span className="orbit o3"/><button className={`recording-mic ${paused ? 'is-paused' : ''}`} onClick={onPause}><Mic size={28}/></button><span className="live-dot"/></div><div className="recording-status"><span className={paused ? 'status-paused' : ''}/>{paused ? 'Paused' : 'Listening...'}</div><h2>Speak naturally.<br/><em>I’ll take care of the rest.</em></h2><div className="waveform" aria-label="Audio waveform">{Array.from({ length: 41 }, (_, i) => <i key={i} style={{ height: `${8 + ((i * 13 + 7) % 27)}px`, animationDelay: `${(i % 11) * -0.12}s` }}/>)}</div><div className="record-time">00:{String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}</div><div className="record-controls"><button onClick={onPause}><Pause size={15}/>{paused ? 'Resume' : 'Pause'}</button><button className="stop-record" onClick={onStop}><Square size={13} fill="currentColor"/> Finish for today</button></div><span className="recording-footnote"><LockKeyhole size={12}/> Your recording stays in your personal space</span></div></div> }
 
-function ProcessingModal({ step }: { step: number }) { const lines = ['Your thoughts are taking shape...', 'Finding the moments that matter...', 'Connecting this with what you already remember...', 'Your entry is ready.']; return <div className="overlay processing-overlay"><div className="processing-panel"><div className="processing-visual"><div className="process-ring r1"/><div className="process-ring r2"/><div className="process-ring r3"/><div className="process-core"><AudioLines size={25}/></div><span className="concept c1">Hackathon</span><span className="concept c2">Arun</span><span className="concept c3">Progress</span><span className="concept c4">An idea</span><span className="concept c5">Tomorrow</span><i className="particle p1"/><i className="particle p2"/><i className="particle p3"/></div><div className="eyebrow">A LITTLE TIME TO SETTLE</div><h2>{lines[step]}</h2><p>{step < 2 ? 'Gathering the moments you shared into something you can return to.' : 'A few things are finding their place.'}</p><div className="processing-pips">{[0, 1, 2, 3].map(i => <i className={step >= i ? 'lit' : ''} key={i}/>)}</div><span className="processing-quiet"><LockKeyhole size={12}/> This can take a moment</span></div></div> }
+function ProcessingModal({ step }: { step: number }) { const lines = ['Your thoughts are taking shape...', 'Finding the moments that matter...', 'Connecting this with what you already remember...', 'Your entry is ready.']; return <div className="overlay processing-overlay"><div className="processing-panel"><div className="processing-visual"><div className="process-ring r1"/><div className="process-ring r2"/><div className="process-ring r3"/><div className="process-core"><AudioLines size={25}/></div><span className="concept c1">Hackathon</span><span className="concept c2">Arun</span><span className="concept c3">Progress</span><span className="concept c4">An idea</span><span className="concept c5">Tomorrow</span><i className="particle p1"/><i className="particle p2"/><i className="particle p3"/></div><div className="eyebrow">A LITTLE TIME TO SETTLE</div><h2>{lines[step]}</h2><p>{step < 2 ? 'Gathering the moments you shared into something you can return to.' : 'A few things are finding their place.'}</p><small className="processing-demo-note">The audio stays in this browser; transcript and memory examples are simulated.</small><div className="processing-pips">{[0, 1, 2, 3].map(i => <i className={step >= i ? 'lit' : ''} key={i}/>)}</div><span className="processing-quiet"><LockKeyhole size={12}/> This can take a moment</span></div></div> }
 function FindingsModal({ entry, onClose, onNavigate }: { entry: DiaryEntry | null; onClose: () => void; onNavigate: (page: Page) => void }) { const findings = [{ title: 'Hackathon', text: 'Made progress on the project architecture.' }, { title: 'Arun', text: 'Talked through the next step over coffee.' }, { title: 'Intention', text: 'Finish the diary view tomorrow.' }, { title: 'An idea', text: 'A future time capsule feature.' }]; return <div className="overlay findings-overlay"><div className="findings-panel"><button className="modal-close" onClick={onClose} aria-label="Close findings"><X size={18}/></button><div className="eyebrow">A FEW THINGS CAME THROUGH</div><h2>I found <em>4 things</em><br/>worth remembering.</h2><div className="findings-list">{findings.map((item, i) => <article className="finding-item" key={item.title} style={{ animationDelay: `${i * .16}s` }}><span className="finding-number">0{i + 1}</span><div><b>{item.title}</b><p>{item.text}</p></div><span className="finding-dot"/></article>)}</div><div className="findings-actions"><button className="primary-action" onClick={() => onNavigate('Diary')}><span><b>View my entry</b><small>{entry?.title ?? 'A day taking shape'}</small></span><ChevronRight size={17}/></button><button className="findings-memory-link" onClick={() => onNavigate('Memories')}>See my memories <ChevronRight size={14}/></button></div></div></div> }
 
-function DiaryPage({ diary, selected, onSelect, onNavigate }: { diary: DiaryEntry[]; selected: DiaryEntry | null; onSelect: (entry: DiaryEntry | null) => void; onNavigate: (page: Page) => void }) {
-  if (selected) return <article className="diary-detail page-content"><button className="back-link" onClick={() => onSelect(null)}><ChevronLeft size={15}/> All diary entries</button><div className="eyebrow">{selected.date.toUpperCase()}</div><div className="diary-paper"><h1>{selected.title}</h1><div className="diary-prose">{selected.content.split('\n\n').map((part, i) => <p key={i}>{part}</p>)}</div><div className="diary-meta"><div><small>MOOD</small><b>{selected.mood}</b></div><div><small>ENERGY</small><b>{selected.energy}</b></div><div><small>TOPICS</small><div className="tag-row">{selected.topics.map(t => <span className="topic-tag" key={t}>{t}</span>)}</div></div></div>{selected.people.length > 0 && <div className="diary-related"><div className="section-caption"><span>PEOPLE IN THIS ENTRY</span></div><p>{selected.people.join(' · ')}</p></div>}<div className="diary-related"><div className="section-caption"><span>RELATED MEMORIES</span><button onClick={() => onNavigate('Memories')}>{selected.memoryIds.length || 3} memories <ChevronRight size={14}/></button></div><p>Moments worth keeping close.</p></div><div className="audio-player"><button className="play-button"><Play size={15} fill="currentColor"/></button><div className="audio-info"><b>Original recording</b><small>Voice note · 2:18</small></div><div className="audio-bars">{Array.from({ length: 26 }, (_, i) => <i key={i} style={{ height: `${5 + (i * 9 % 16)}px` }}/>)}</div><span>2:18</span></div></div></article>
-  return <section className="page-content"><PageHeading eyebrow="YOUR OWN WORDS, HELD GENTLY" title="Diary" subtitle="A little more room to remember how it felt." action={<button className="outline-action" onClick={() => onSelect({ id: 'new', date: 'Thursday, October 1, 2026', title: 'A moment from today', content: 'Today felt like...', mood: 'Thoughtful', energy: 'Steady', topics: ['Today'], people: [], memoryIds: [] })}><Plus size={15}/> New entry</button>} />{diary.length === 0 ? <div className="empty-state"><Feather/><h3>Your diary is waiting.</h3><p>Your first entry can begin with one small moment from today.</p></div> : <div className="diary-layout"><div className="diary-list">{diary.map((entry, i) => <button className={`diary-row ${i === 0 ? 'diary-row-current' : ''}`} onClick={() => onSelect(entry)} key={entry.id}><span className="diary-date">{entry.date.split(',').slice(1).join(',').trim()}</span><span className="diary-mood">{entry.mood}</span><b>{entry.title}</b><p>{entry.content.slice(0, 125)}…</p><span className="diary-open">Read entry <ChevronRight size={13}/></span></button>)}</div><aside className="diary-note"><div className="note-mark">“</div><p>These are your moments, in your own words.</p><small>RETURN WHENEVER YOU’RE READY</small></aside></div>}</section>
+function DiaryPage({ diary, selected, onSelect, onSave, onRecord }: { diary: DiaryEntry[]; selected: DiaryEntry | null; onSelect: (entry: DiaryEntry | null) => void; onSave: (entry: DiaryEntry) => void; onRecord: () => void }) {
+  const [search, setSearch] = useState('')
+  const [attachment, setAttachment] = useState('')
+  const editorRef = useRef<HTMLTextAreaElement | null>(null)
+  const createEntry = () => {
+    const date = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date())
+    onSelect({ id: 'new', date, title: '', content: '', mood: 'Thoughtful', energy: 'Steady', topics: [], people: [], memoryIds: [] })
+    setAttachment('')
+  }
+  const updateEntry = (changes: Partial<DiaryEntry>) => {
+    if (!selected) return
+    const updated = { ...selected, ...changes }
+    if (updated.id === 'new' && (updated.title.trim() || updated.content.trim())) updated.id = `d${Date.now()}`
+    onSelect(updated)
+    if (updated.id !== 'new') onSave(updated)
+  }
+  const addFormatting = (before: string, after = before) => {
+    const editor = editorRef.current
+    if (!editor || !selected) return
+    const start = editor.selectionStart
+    const end = editor.selectionEnd
+    const value = selected.content
+    const selectedText = value.slice(start, end)
+    const insertion = `${before}${selectedText || 'text'}${after}`
+    const content = `${value.slice(0, start)}${insertion}${value.slice(end)}`
+    updateEntry({ content })
+    requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(start + before.length, start + before.length + (selectedText || 'text').length) })
+  }
+  const insertList = () => {
+    const editor = editorRef.current
+    if (!editor || !selected) return
+    const start = editor.selectionStart
+    const content = `${selected.content.slice(0, start)}\n• ${selected.content.slice(start)}`
+    updateEntry({ content })
+    requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(start + 3, start + 3) })
+  }
+
+  if (selected) return <section className="page-content diary-notebook">
+    <button className="back-link diary-back-link" onClick={() => onSelect(null)}><ChevronLeft size={15}/> All diary entries</button>
+    <div className="notebook-heading"><div className="eyebrow">{selected.date.toUpperCase()}</div><input aria-label="Entry title" value={selected.title} onChange={event => updateEntry({ title: event.target.value })} placeholder="A day taking shape" maxLength={100}/><span className="notebook-save-state">{selected.id === 'new' ? 'DRAFT' : 'SAVED IN YOUR DIARY'}</span></div>
+    <div className="notebook-writing"><textarea ref={editorRef} aria-label="Diary entry" value={selected.content} onChange={event => updateEntry({ content: event.target.value })} placeholder="Start writing your thoughts…" spellCheck /></div>
+    {attachment && <div className="notebook-attachment"><Paperclip size={13}/>{attachment}<button onClick={() => setAttachment('')} aria-label="Remove attachment"><X size={13}/></button></div>}
+    <div className="notebook-toolbar" role="toolbar" aria-label="Diary formatting">
+      <div className="notebook-tool-group"><button title="Bold" aria-label="Bold" onClick={() => addFormatting('**')}><Bold size={17}/></button><button title="Italic" aria-label="Italic" onClick={() => addFormatting('*')}><Italic size={17}/></button><button title="Underline" aria-label="Underline" onClick={() => addFormatting('<u>', '</u>')}><Underline size={17}/></button></div>
+      <span className="notebook-tool-divider"/><div className="notebook-tool-group"><button title="Bulleted list" aria-label="Bulleted list" onClick={insertList}><List size={18}/></button><button title="Code" aria-label="Code" onClick={() => addFormatting('`')}><Code2 size={17}/></button></div>
+      <span className="notebook-tool-spacer"/><label className="notebook-attach" title="Attach a file"><Paperclip size={16}/><span>Attach</span><input type="file" onChange={event => setAttachment(event.target.files?.[0]?.name ?? '')}/></label><span className="notebook-tool-divider"/><button className="notebook-mic" title="Record a thought" aria-label="Record a thought" onClick={onRecord}><Mic size={18}/></button>
+    </div>
+  </section>
+
+  const filteredDiary = diary.filter(entry => `${entry.title} ${entry.content} ${entry.date}`.toLowerCase().includes(search.toLowerCase()))
+  return <section className="page-content diary-library">
+    <PageHeading eyebrow="YOUR OWN WORDS, HELD GENTLY" title="Your diary" subtitle="A space for your thoughts, plans, and everything in between." />
+    <button className="diary-new-entry" onClick={createEntry}><Plus size={19}/><span>New entry</span><ChevronRight size={16}/></button>
+    <label className="diary-search"><Search size={15}/><input aria-label="Search entries" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search entries"/><span>{filteredDiary.length} entries</span></label>
+    {filteredDiary.length ? <div className="diary-library-list">{filteredDiary.map((entry, index) => <button className="diary-library-row" onClick={() => { onSelect(entry); setAttachment('') }} key={entry.id}>
+      <span className="diary-library-icon"><Feather size={16}/></span><span className="diary-library-copy"><span className="diary-library-meta">{entry.date}{entry.mood ? ` · ${entry.mood}` : ''}</span><b>{entry.title || 'Untitled entry'}</b><small>{entry.content.slice(0, 150)}{entry.content.length > 150 ? '…' : ''}</small></span><ChevronRight size={16} className="diary-library-arrow"/>
+    </button>)}</div> : <div className="diary-library-empty"><div className="note-mark">“</div><h3>{search ? 'No entries found.' : 'Your diary is waiting.'}</h3><p>{search ? 'Try a different search.' : 'Start with one small moment from today.'}</p></div>}
+    <aside className="diary-library-note"><span>✳</span>These are your moments, in your own words.</aside>
+  </section>
 }
 
 function MemoriesPage({ memories, onOpen }: { memories: Memory[]; onOpen: (memory: Memory) => void }) { const [filter, setFilter] = useState('All memories'); return <section className="page-content"><PageHeading eyebrow="THE MOMENTS THAT STAY WITH YOU" title="Memories" subtitle="Small things, gathered over time. Here whenever you need them."/><div className="filter-row"><button className="search-trigger"><Search size={15}/> Find a memory <span>⌘ K</span></button><button className="filter-button" onClick={() => setFilter(filter === 'All memories' ? 'Recent' : 'All memories')}>{filter} <ChevronDown size={14}/></button></div><div className="memories-list">{memories.map(memory => <button className="memory-row" key={memory.id} onClick={() => onOpen(memory)}><div className="memory-row-mark"><Bookmark size={16}/></div><div className="memory-row-main"><div className="memory-row-date">{memory.date}</div><p>“{memory.content}”</p><div className="tag-row">{memory.topics.map(topic => <span className="topic-tag" key={topic}>{topic}</span>)}</div><div className="source-inline"><AudioLines size={13}/>{memory.source.kind}<span>·</span>{memory.source.date}</div></div><ChevronRight className="memory-row-chevron" size={17}/></button>)}{memories.length === 0 && <div className="empty-state"><Bookmark/><h3>Nothing to remember yet.</h3><p>Capture a moment and it will find its place here.</p></div>}</div></section> }
